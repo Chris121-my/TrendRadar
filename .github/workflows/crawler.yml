@@ -26,8 +26,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
+          # 1. 单独安装 CPU 版 PyTorch (速度快，防止下载 GPU 版)
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers
+          pip install -r requirements.txt 
       - name: Verify required files
         run: |
           echo "🔍 检查必需的配置文件..."
