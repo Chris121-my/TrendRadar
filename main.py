@@ -14,6 +14,7 @@ from email.utils import formataddr, formatdate, make_msgid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
+from transformers import pipeline
 
 import pytz
 import requests
@@ -229,6 +230,48 @@ print("正在加载配置...")
 CONFIG = load_config()
 print(f"TrendRadar v{VERSION} 配置加载完成")
 print(f"监控平台数量: {len(CONFIG['PLATFORMS'])}")
+
+# === 自动归类新闻标签 ===
+def load_zero_shot_classifier():
+    """从文件加载自动分类标签配置"""
+    # 读取自动分类配置文件
+    auto_classification_file = "config/auto_classification.txt"
+    candidate_labels = []
+    
+    if os.path.exists(auto_classification_file):
+        with open(auto_classification_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):  # 忽略空行和注释
+                    candidate_labels.append(line)
+    else:
+        # 默认标签（备份）
+        candidate_labels = ["科技", "财经", "汽车", "娱乐", "体育", "互联网", "医疗", "房产", "教育", "社会", "国际", "军事", "生活"]
+    
+    # 检查是否启用（可以在config.yaml中配置，或者这里简单判断）
+    enabled = len(candidate_labels) > 0  # 有标签就启用
+    
+    if not enabled:
+        candidate_labels = ["科技", "财经", "汽车", "娱乐", "体育", "互联网", "医疗", "房产", "教育", "社会", "国际", "军事", "生活"]
+    
+    try:
+        classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+        return classifier, candidate_labels
+    except Exception as e:
+        print(f"自动分类模型加载失败: {e}")
+        return None, candidate_labels
+
+def classify_news_list(news_list, classifier, candidate_labels):
+    classified_news = {label: [] for label in candidate_labels}
+    for news in news_list:
+        title = news.get('title') or news.get('标题')
+        if not title:
+            continue
+        result = classifier(title, candidate_labels, multi_label=False)
+        label = result["labels"][0]
+        classified_news[label].append(news)
+    return classified_news
+
 
 
 # === 工具函数 ===
@@ -1565,10 +1608,11 @@ def format_title_for_platform(
         else:
             result = f"{title_prefix}{formatted_title}"
 
-        if rank_display:
-            result += f" {rank_display}"
-        if title_data["time_display"]:
-            result += f" - {title_data['time_display']}"
+        # 移除排名显示和时间显示
+        # if rank_display:
+        #     result += f" {rank_display}"
+        # if title_data["time_display"]:
+        #     result += f" - {title_data['time_display']}"
         if title_data["count"] > 1:
             result += f" ({title_data['count']}次)"
 
@@ -2890,6 +2934,8 @@ def split_content_into_batches(
     mode: str = "daily",
 ) -> List[str]:
     """分批处理消息内容，确保词组标题+至少第一条新闻的完整性"""
+
+
     if max_bytes is None:
         if format_type == "dingtalk":
             max_bytes = CONFIG.get("DINGTALK_BATCH_SIZE", 20000)
@@ -3694,6 +3740,7 @@ def send_to_wework(
     mode: str = "daily",
 ) -> bool:
     """发送到企业微信（支持分批发送，支持 markdown 和 text 两种格式）"""
+    
     headers = {"Content-Type": "application/json"}
     proxies = None
     if proxy_url:
@@ -4522,6 +4569,20 @@ class NewsAnalyzer:
 
         title_file = save_titles_to_file(results, id_to_name, failed_ids)
         print(f"标题已保存到: {title_file}")
+
+        # 自动归类新闻标签
+        if results:
+            all_news = []
+            for id_val, news_dict in results.items():
+                for title, info in news_dict.items():
+                    all_news.append({'title': title, 'url': info.get('url', ''), 'source_id': id_val, 'ranks': info.get('ranks', []), 'mobile_url': info.get('mobileUrl', '')})
+            classifier, candidate_labels = load_zero_shot_classifier()
+            classified_news = classify_news_list(all_news, classifier, candidate_labels)
+            for label, newses in classified_news.items():
+                if newses:
+                    print(f"\n【{label}】共{len(newses)}条")
+                    for news in newses[:5]:
+                        print(" -", news["title"])
 
         return results, id_to_name, failed_ids
 
