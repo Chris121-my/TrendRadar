@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from transformers import pipeline
+import torch
 
 import pytz
 import requests
@@ -255,7 +256,8 @@ def load_zero_shot_classifier():
         candidate_labels = ["科技", "财经", "汽车", "娱乐", "体育", "互联网", "医疗", "房产", "教育", "社会", "国际", "军事", "生活"]
     
     try:
-        classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+        device = 0 if torch.cuda.is_available() else -1
+        classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli",device=device)
         return classifier, candidate_labels
     except Exception as e:
         print(f"自动分类模型加载失败: {e}")
