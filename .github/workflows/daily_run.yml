@@ -3,7 +3,7 @@ name: Hot News Crawler
 on:
   schedule:
     # 每天北京时间早上 08:00，18点 运行
-    - cron: "0 0,10 * * *" 
+    - cron: "0 10,21 * * *" 
   workflow_dispatch:
 
 permissions:
@@ -62,9 +62,25 @@ jobs:
           GITHUB_ACTIONS: true
         run: python main.py
 
-      - name: Commit and push if changes
+     - name: Commit and push if changes
         run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'shimy451@gmail.com'
+          
           git add -A
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto update by GitHub Actions at $(TZ=Asia/Shanghai date)" && git push)
+          
+          # 🔥 修正点：这里只检查 --staged (已暂存区) 是否有变化
+          if ! git diff --staged --quiet; then
+            echo "📝 发现文件变动，准备提交..."
+            
+            git commit -m "Auto update by GitHub Actions at $(TZ=Asia/Shanghai date)"
+            
+            echo "🔄 拉取最新代码..."
+            git pull --rebase origin master
+            
+            echo "🚀 推送代码..."
+            git push origin master
+            echo "✅ 推送成功！"
+          else
+            echo "💤 没有文件变动，跳过提交。"
+          fi
