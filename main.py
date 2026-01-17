@@ -14,8 +14,6 @@ from email.utils import formataddr, formatdate, make_msgid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
-from transformers import pipeline
-import torch
 
 import pytz
 import requests
@@ -233,8 +231,8 @@ print(f"TrendRadar v{VERSION} 配置加载完成")
 print(f"监控平台数量: {len(CONFIG['PLATFORMS'])}")
 
 # === 自动归类新闻标签 ===
-def load_zero_shot_classifier():
-    """从文件加载自动分类标签配置"""
+def load_keyword_classifier():
+    """加载基于关键词的轻量级分类器配置"""
     # 读取自动分类配置文件
     auto_classification_file = "config/auto_classification.txt"
     candidate_labels = []
@@ -255,23 +253,65 @@ def load_zero_shot_classifier():
     if not enabled:
         candidate_labels = ["科技", "财经", "汽车", "娱乐", "体育", "互联网", "医疗", "房产", "教育", "社会", "国际", "军事", "生活"]
     
-    try:
-        device = 0 if torch.cuda.is_available() else -1
-        classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli",device=device)
-        return classifier, candidate_labels
-    except Exception as e:
-        print(f"自动分类模型加载失败: {e}")
-        return None, candidate_labels
+    # 定义每个分类的关键词字典（基于常见关键词匹配）
+    keyword_map = {
+        "科技": ["科技", "技术", "AI", "人工智能", "芯片", "半导体", "5G", "6G", "互联网", "软件", "硬件", "算法", "数据", "云计算", "区块链", "量子", "机器人", "智能"],
+        "财经": ["财经", "金融", "股市", "股票", "基金", "投资", "银行", "证券", "经济", "GDP", "通胀", "货币政策", "汇率", "上市", "IPO", "融资", "市值", "财报"],
+        "汽车": ["汽车", "车", "电动车", "新能源车", "特斯拉", "比亚迪", "蔚来", "理想", "小鹏", "宝马", "奔驰", "奥迪", "油价", "充电", "自动驾驶", "车展"],
+        "娱乐": ["娱乐", "明星", "电影", "电视剧", "综艺", "音乐", "歌手", "演员", "导演", "票房", "演唱会", "直播", "网红", "热搜", "八卦"],
+        "体育": ["体育", "足球", "篮球", "奥运", "世界杯", "NBA", "CBA", "比赛", "运动员", "冠军", "金牌", "赛事", "俱乐部", "联赛"],
+        "互联网": ["互联网", "电商", "平台", "APP", "应用", "用户", "流量", "下载", "社交", "微信", "微博", "抖音", "快手", "字节", "腾讯", "阿里", "京东"],
+        "医疗": ["医疗", "健康", "医院", "医生", "患者", "疾病", "治疗", "药物", "疫苗", "医保", "药品", "手术", "诊断"],
+        "房产": ["房产", "房地产", "房价", "楼市", "购房", "租房", "物业", "地产", "开发商", "住宅", "商业地产", "土地"],
+        "教育": ["教育", "学校", "学生", "教师", "考试", "高考", "大学", "学历", "课程", "培训", "教育部"],
+        "社会": ["社会", "民生", "就业", "工资", "退休", "养老", "社保", "福利", "政策", "法规", "监管"],
+        "国际": ["国际", "外交", "美国", "欧洲", "日本", "韩国", "俄罗斯", "英国", "法国", "德国", "贸易", "合作", "协议"],
+        "军事": ["军事", "军队", "国防", "武器", "演习", "战争", "冲突", "安全", "部队"],
+        "生活": ["生活", "美食", "旅游", "出行", "天气", "购物", "消费", "服务", "体验", "品质"]
+    }
+    
+    return keyword_map, candidate_labels
 
-def classify_news_list(news_list, classifier, candidate_labels):
+def classify_news_list(news_list, keyword_map, candidate_labels):
+    """使用关键词匹配进行新闻分类"""
     classified_news = {label: [] for label in candidate_labels}
+    
     for news in news_list:
         title = news.get('title') or news.get('标题')
         if not title:
             continue
-        result = classifier(title, candidate_labels, multi_label=False)
-        label = result["labels"][0]
-        classified_news[label].append(news)
+        
+        title_lower = title.lower()
+        best_match = None
+        max_score = 0
+        
+        # 为每个分类计算匹配分数
+        for label in candidate_labels:
+            keywords = keyword_map.get(label, [label])  # 如果没有关键词配置，使用标签本身
+            score = 0
+            
+            # 计算匹配的关键词数量
+            for keyword in keywords:
+                if keyword.lower() in title_lower:
+                    # 完全匹配得分更高
+                    if keyword.lower() == title_lower:
+                        score += 10
+                    elif title_lower.startswith(keyword.lower()) or title_lower.endswith(keyword.lower()):
+                        score += 5
+                    else:
+                        score += 1
+            
+            # 选择得分最高的分类
+            if score > max_score:
+                max_score = score
+                best_match = label
+        
+        # 如果没有匹配到任何分类，归入"生活"类
+        if best_match is None or max_score == 0:
+            best_match = "生活" if "生活" in candidate_labels else candidate_labels[0]
+        
+        classified_news[best_match].append(news)
+    
     return classified_news
 
 
@@ -1820,6 +1860,15 @@ def render_html_content(
                 cursor: not-allowed;
             }
             
+            .save-btn.refreshing {
+                animation: pulse 2s infinite;
+            }
+            
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.7; }
+            }
+            
             .header-title {
                 font-size: 22px;
                 font-weight: 700;
@@ -2182,6 +2231,7 @@ def render_html_content(
         <div class="container">
             <div class="header">
                 <div class="save-buttons">
+                    <button class="save-btn" onclick="refreshNews()" id="refreshBtn">刷新获取最新</button>
                     <button class="save-btn" onclick="saveAsImage()">保存为图片</button>
                     <button class="save-btn" onclick="saveAsMultipleImages()">分段保存</button>
                 </div>
@@ -2435,6 +2485,137 @@ def render_html_content(
         </div>
         
         <script>
+            let refreshTimer = null;
+            
+            // 检测是否在Web服务器环境中
+            function isWebServerEnvironment() {
+                return window.location.protocol === 'http:' || window.location.protocol === 'https:';
+            }
+            
+            // 获取API基础URL
+            function getApiBaseUrl() {
+                if (isWebServerEnvironment()) {
+                    // 在Web服务器环境中，使用相对路径
+                    return '';
+                } else {
+                    // 在file://协议下，尝试使用localhost:8080
+                    // 用户需要先启动Web服务器
+                    return 'http://localhost:8080';
+                }
+            }
+            
+            async function refreshNews() {
+                const button = document.getElementById('refreshBtn');
+                const originalText = button.textContent;
+                
+                // 检查是否在正确的环境中
+                if (!isWebServerEnvironment()) {
+                    const useWebServer = confirm(
+                        '检测到您直接打开了本地HTML文件。\\n\\n' +
+                        '刷新功能需要通过Web服务器访问才能使用。\\n\\n' +
+                        '是否要跳转到 http://localhost:8080 访问？\\n\\n' +
+                        '(请确保已运行 start-web-server.bat 启动Web服务器)'
+                    );
+                    if (useWebServer) {
+                        window.location.href = 'http://localhost:8080';
+                    }
+                    return;
+                }
+                
+                try {
+                    button.textContent = '正在刷新...';
+                    button.disabled = true;
+                    
+                    const apiBase = getApiBaseUrl();
+                    
+                    // 调用API触发重新爬取
+                    const response = await fetch(apiBase + '/api/trigger', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        button.textContent = '任务已启动，等待完成...';
+                        
+                        // 轮询检查任务状态
+                        checkTaskStatus();
+                    } else {
+                        button.textContent = data.message || '刷新失败';
+                        setTimeout(() => {
+                            button.textContent = originalText;
+                            button.disabled = false;
+                        }, 3000);
+                    }
+                } catch (error) {
+                    console.error('刷新失败:', error);
+                    button.textContent = '刷新失败: ' + (error.message || '网络错误');
+                    if (error.message && error.message.includes('fetch')) {
+                        button.textContent += '\\n请确保Web服务器正在运行';
+                    }
+                    setTimeout(() => {
+                        button.textContent = originalText;
+                        button.disabled = false;
+                    }, 5000);
+                }
+            }
+            
+            function checkTaskStatus() {
+                // 清除之前的定时器
+                if (refreshTimer) {
+                    clearInterval(refreshTimer);
+                }
+                
+                // 每3秒检查一次任务状态
+                refreshTimer = setInterval(async () => {
+                    try {
+                        const apiBase = getApiBaseUrl();
+                        const response = await fetch(apiBase + '/api/status');
+                        
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+                        
+                        const button = document.getElementById('refreshBtn');
+                        
+                        if (!data.running) {
+                            // 任务完成，刷新页面
+                            clearInterval(refreshTimer);
+                            button.textContent = '刷新成功！正在重新加载...';
+                            setTimeout(() => {
+                                window.location.reload();
+                            }, 1000);
+                        } else if (data.error) {
+                            // 任务出错
+                            clearInterval(refreshTimer);
+                            button.textContent = '刷新失败: ' + data.error;
+                            setTimeout(() => {
+                                button.textContent = '刷新获取最新';
+                                button.disabled = false;
+                            }, 5000);
+                        } else {
+                            // 任务运行中
+                            button.textContent = `任务运行中... (${data.last_run_time || '等待中'})`;
+                        }
+                    } catch (error) {
+                        console.error('检查状态失败:', error);
+                        clearInterval(refreshTimer);
+                        const button = document.getElementById('refreshBtn');
+                        button.textContent = '状态检查失败';
+                        button.disabled = false;
+                    }
+                }, 3000);
+            }
+            
             async function saveAsImage() {
                 const button = event.target;
                 const originalText = button.textContent;
@@ -4578,8 +4759,8 @@ class NewsAnalyzer:
             for id_val, news_dict in results.items():
                 for title, info in news_dict.items():
                     all_news.append({'title': title, 'url': info.get('url', ''), 'source_id': id_val, 'ranks': info.get('ranks', []), 'mobile_url': info.get('mobileUrl', '')})
-            classifier, candidate_labels = load_zero_shot_classifier()
-            classified_news = classify_news_list(all_news, classifier, candidate_labels)
+            keyword_map, candidate_labels = load_keyword_classifier()
+            classified_news = classify_news_list(all_news, keyword_map, candidate_labels)
             for label, newses in classified_news.items():
                 if newses:
                     print(f"\n【{label}】共{len(newses)}条")
